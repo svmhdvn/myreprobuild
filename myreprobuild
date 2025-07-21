@@ -14,11 +14,13 @@ EOF
 }
 
 setup_system() {
-  doas poudriere jail -c -j rb1 -v "${latest_release_version}" || true
-  doas poudriere jail -u -j rb1 -v "${latest_release_version}"
-
-  doas poudriere jail -c -j rb2 -v "${latest_release_version}" || true
-  doas poudriere jail -u -j rb2 -v "${latest_release_version}"
+  #doas install -d -o 4444 -g 4444 -m 0755 /var/cache/myreprobuild/distfiles/left
+  #doas install -d -o 5555 -g 5555 -m 0755 /var/cache/myreprobuild/distfiles/right
+  doas poudriere -e ${top} jail -c -j rb1 -v "${latest_release_version}" || true
+  doas poudriere -e ${top} jail -u -j rb1 -v "${latest_release_version}"
+  doas poudriere -e ${top} jail -c -j rb2 -v "${latest_release_version}" || true
+  doas poudriere -e ${top} jail -u -j rb2 -v "${latest_release_version}"
+  doas poudriere -e ${top} ports -c -p default -m null -M "${HOME}/src/freebsd-ports"
 }
 
 # TODO determine whether we want:
@@ -27,35 +29,36 @@ setup_system() {
 bulk_check_reproducibility() {
   #_tmpdir="$(mktemp -d)"
   _tmpdir="${HOME}/.cache/myreprobuildtest"
+  _jobs=$(($(nproc) / 2))
   rm -rf "${_tmpdir:?}"/*
   mkdir -p \
     "${_tmpdir}/pkgs/left" \
     "${_tmpdir}/pkgs/right" \
     "${_tmpdir}/logs"
-  tmux new-session -d -c "${PWD}" -s myreprobuild -n bulk \
-    "doas poudriere bulk -cNN -j rb1 $* 2>&1 | tee '${_tmpdir}/logs/rb1.log'"
-  sleep 2 # put at least two seconds between the two runs to check for timestamp reproducibility
-  tmux split-window -c "${PWD}" -t myreprobuild:bulk \
-    "doas poudriere bulk -cNN -j rb2 $* 2>&1 | tee '${_tmpdir}/logs/rb2.log'"
-  env -u TMUX tmux attach-session -t myreprobuild > /dev/null
+  tmux -f /dev/null new-session -d -c "${PWD}" -s myreprobuild -n bulk \
+    "doas poudriere -e ${top} bulk -cNN -J ${_jobs} -j rb1 $* 2>&1 | tee '${_tmpdir}/logs/rb1.log'"
+  sleep 2 # put at least one minute between the two runs to check for timestamp reproducibility
+  tmux -f /dev/null split-window -c "${PWD}" -t myreprobuild:bulk \
+    "doas poudriere -e ${top} bulk -cNN -J ${_jobs} -j rb2 $* 2>&1 | tee '${_tmpdir}/logs/rb2.log'"
+  env -u TMUX tmux -f /dev/null attach-session -t myreprobuild > /dev/null
 
   (
-    cd /usr/local/poudriere/data/packages/rb1-default/.building/All && \
-    ls -1 /usr/local/poudriere/data/packages/rb1-default/.building/logs/logs/built | \
+    cd /var/cache/myreprobuild/basefs/data/packages/rb1-default/.building/All && \
+    ls -1 /var/cache/myreprobuild/basefs/data/packages/rb1-default/.building/logs/logs/built | \
       sed 's/\.log$/.pkg/' | \
       xargs -J% cp % "${_tmpdir}/pkgs/left"
   )
   (
-    cd /usr/local/poudriere/data/packages/rb2-default/.building/All && \
-    ls -1 /usr/local/poudriere/data/packages/rb2-default/.building/logs/logs/built | \
+    cd /var/cache/myreprobuild/basefs/data/packages/rb2-default/.building/All && \
+    ls -1 /var/cache/myreprobuild/basefs/data/packages/rb2-default/.building/logs/logs/built | \
       sed 's/\.log$/.pkg/' | \
       xargs -J% cp % "${_tmpdir}/pkgs/right"
   )
   cp -RL \
-    /usr/local/poudriere/data/packages/rb1-default/.building/logs/logs/built \
+    /var/cache/myreprobuild/basefs/data/packages/rb1-default/.building/logs/logs/built \
     "${_tmpdir}/logs/left"
   cp -RL \
-    /usr/local/poudriere/data/packages/rb2-default/.building/logs/logs/built \
+    /var/cache/myreprobuild/basefs/data/packages/rb2-default/.building/logs/logs/built \
     "${_tmpdir}/logs/right"
 
   echo TAP version 14 | tee "${_tmpdir}/results.tap" >&2
@@ -70,13 +73,12 @@ bulk_check_reproducibility() {
     printf '1..%d\n' "${_i}" | tee -a "${_tmpdir}/results.tap" >&2
   )
 
+  echo "listing '${_tmpdir}':"
   ls -alh "${_tmpdir}"
 }
 
-#realpath="$(realpath "$0")"
-#top="$(dirname "${realpath}")"
-#src="${HOME}/src/freebsd-src"
-#j="${J:-$(nproc)}"
+realpath="$(realpath "$0")"
+top="$(dirname "${realpath}")"
 
 cmd="$1"
 shift
